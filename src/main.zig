@@ -497,13 +497,12 @@ const MAX_PATH_BYTES = std.fs.MAX_PATH_BYTES;
 const ReadPath = struct {
     buffer: [MAX_PATH_BYTES]u8 = undefined,
     len: usize = 0,
-    status: c_int = 0,
 
     fn ptr(self: *const @This()) [*:0]const u8 {
         return @ptrCast([*:0]const u8, &self.buffer[0]);
     }
 
-    fn slice(self: *const @This()) []const u8 {
+    fn slice(self: *@This()) []u8 {
         return self.buffer[0..self.len];
     }
 };
@@ -511,36 +510,24 @@ const ReadPath = struct {
 fn recvpath(reader: std.fs.File.Reader) callconv(.Inline) !ReadPath {
     var result: ReadPath = .{};
 
-    while (true) {
-        const byte = try recv(reader, u8);
-        result.buffer[result.len] = byte;
-
-        result.len += 1;
-
-        if (byte == 0)
-            break;
-
-        if (result.len == MAX_PATH_BYTES) {
-            return error.PathTooLong;
-        }
+    result.len = try recv(reader, u16);
+    if (result.len > MAX_PATH_BYTES) {
+        return error.PathTooLong;
     }
 
+    try recvinto(reader, result.slice());
     return result;
 }
 
-fn sendpath(writer: std.fs.File.Writer, path: [*c]const u8) !void {
-    var sent: usize = 0;
-    while (true) {
-        const byte = path[sent];
-        try send(writer, byte);
-        sent += 1;
+fn sendpath(writer: std.fs.File.Writer, path: [*:0]const u8) !void {
+    const span = std.mem.span(path);
 
-        if (byte == 0)
-            break;
-
-        if (sent == MAX_PATH_BYTES) // UH OH!!
-            return error.PathTooLong;
+    if (span.len > MAX_PATH_BYTES) {
+        return error.PathTooLong;
     }
+
+    try send(writer, @intCast(u16, span.len));
+    try sendfrom(writer, span);
 }
 
 fn valid_client_fd(fd: i32) bool {
@@ -609,7 +596,7 @@ pub fn run_server(enable_writing: bool) !void {
                             try send(writer, st);
 
                             // Now send the name
-                            try sendpath(writer, dent.name.ptr);
+                            try sendpath(writer, @ptrCast([*:0]const u8, dent.name.ptr));
 
                             // Do you want another one?
                             if (0 == try recv(reader, u8))
