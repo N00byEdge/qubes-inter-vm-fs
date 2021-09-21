@@ -242,7 +242,23 @@ const Client = struct {
             }
         }.f,
 
-        .statfs = null,
+        .statfs = struct {
+            fn f(path: [*c]const u8, stat_buf: [*c]fuse.struct_statvfs) callconv(.C) c_int {
+                stat_buf.*.f_bsize = 512;
+                stat_buf.*.f_frsize = 512;
+
+                stat_buf.*.f_blocks = 0x84848484;
+                stat_buf.*.f_bfree = 0x42424242;
+                stat_buf.*.f_bavail = 0x42424242;
+
+                stat_buf.*.f_files = 696969 * 2;
+                stat_buf.*.f_ffree = 696969;
+                stat_buf.*.f_favail = 696969;
+
+                return 0;
+            }
+        }.f,
+
         .flush = null,
 
         .release = struct {
