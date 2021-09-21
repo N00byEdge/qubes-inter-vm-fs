@@ -171,48 +171,74 @@ const Client = struct {
         }.f,
 
         .read = struct {
-            fn f(path: [*c]const u8, bytes: [*c]u8, bytes_len: usize, foff: off_t, fi: ?*fuse.fuse_file_info) callconv(.C) c_int {
-                std.log.info("Client: read '{s}' {d}", .{ path, do_fi(fi).fh });
+            fn f(path: [*c]const u8, bytes: [*c]u8, bytes_len: usize, foff_c: off_t, fi: ?*fuse.fuse_file_info) callconv(.C) c_int {
+                std.log.info("Client: read '{s}' {d} {d}", .{ path, do_fi(fi).fh, bytes_len });
 
-                send(client.writer, Command.read) catch @panic("");
-                send(client.writer, @intCast(i32, do_fi(fi).fh)) catch @panic("");
-                send(client.writer, @intCast(u32, bytes_len)) catch @panic("");
-                send(client.writer, foff) catch @panic("");
+                var foff = @intCast(usize, foff_c);
+                const end = bytes_len + foff;
 
-                const result = recv(client.reader, i32) catch @panic("");
+                while (foff < end) {
+                    send(client.writer, Command.read) catch @panic("");
+                    send(client.writer, @intCast(i32, do_fi(fi).fh)) catch @panic("");
+                    send(client.writer, @intCast(u32, end - foff)) catch @panic("");
+                    send(client.writer, foff) catch @panic("");
 
-                std.log.info("Client: read returned {d}", .{result});
+                    const result = recv(client.reader, i32) catch @panic("");
 
-                if (result > 0) {
-                    recvinto(client.reader, bytes[0..@intCast(usize, result)]) catch @panic("");
+                    std.log.info("Client: going to read {d} bytes, out of {d} remaining", .{ result, end - foff });
+
+                    if (result > 0) {
+                        //recvinto(client.reader, bytes[0..bytes_len]) catch @panic("");
+                        recvinto(client.reader, (bytes + foff - @intCast(usize, foff_c))[0..@intCast(usize, result)]) catch @panic("");
+                        foff += @intCast(usize, result);
+                    } else if (result < 0) {
+                        return result;
+                    } else { // result == 0
+                        break;
+                    }
                 }
-                return @intCast(c_int, result);
+
+                return @intCast(c_int, foff - @intCast(usize, foff_c));
             }
         }.f,
 
         .write = struct {
-            fn f(path: [*c]const u8, bytes: [*c]const u8, bytes_len_c: usize, foff: off_t, fi: ?*fuse.fuse_file_info) callconv(.C) c_int {
-                var bytes_len = bytes_len_c;
-
-                if (bytes_len > max_write_bytes)
-                    bytes_len = max_write_bytes;
-
+            fn f(path: [*c]const u8, bytes: [*c]const u8, bytes_len_c: usize, foff_c: off_t, fi: ?*fuse.fuse_file_info) callconv(.C) c_int {
                 if (!client.show_as_writeable)
                     return -std.os.EPERM;
 
+                var foff = @intCast(usize, foff_c);
+                const end = bytes_len_c + foff;
+
                 std.log.info("Client: write '{s}' {d}", .{ path, do_fi(fi).fh });
 
-                send(client.writer, Command.write) catch @panic("");
-                send(client.writer, @intCast(i32, do_fi(fi).fh)) catch @panic("");
-                send(client.writer, @intCast(@TypeOf(max_write_bytes), bytes_len)) catch @panic("");
-                send(client.writer, foff) catch @panic("");
+                while (foff < end) {
+                    var bytes_len = end - foff;
 
-                sendfrom(client.writer, bytes[0..bytes_len]) catch @panic("");
+                    if (bytes_len > max_write_bytes)
+                        bytes_len = max_write_bytes;
 
-                const result = recv(client.reader, i32) catch @panic("");
+                    send(client.writer, Command.write) catch @panic("");
+                    send(client.writer, @intCast(i32, do_fi(fi).fh)) catch @panic("");
+                    send(client.writer, @intCast(@TypeOf(max_write_bytes), bytes_len)) catch @panic("");
+                    send(client.writer, foff) catch @panic("");
 
-                std.log.info("Client: write returned {d}", .{result});
-                return @intCast(c_int, result);
+                    sendfrom(client.writer, (bytes + foff - @intCast(usize, foff_c))[0..bytes_len]) catch @panic("");
+
+                    const result = recv(client.reader, i32) catch @panic("");
+
+                    std.log.info("Client: write returned {d}", .{result});
+
+                    if (result > 0) {
+                        foff += @intCast(usize, result);
+                    } else if (result < 0) {
+                        return result;
+                    } else { // result == 0
+                        break;
+                    }
+                }
+
+                return @intCast(c_int, foff - @intCast(usize, foff_c));
             }
         }.f,
 
