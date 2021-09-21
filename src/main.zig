@@ -218,7 +218,21 @@ const Client = struct {
 
         .statfs = null,
         .flush = null,
-        .release = null,
+
+        .release = struct {
+            fn f(path: [*c]const u8, fi: ?*fuse.fuse_file_info) callconv(.C) c_int {
+                std.log.info("Client: release '{s}' {d}", .{ path, do_fi(fi).fh });
+
+                if (!client.show_as_writeable)
+                    return -std.os.EPERM;
+
+                send(client.writer, Command.close) catch @panic("");
+                send(client.writer, @intCast(i32, do_fi(fi).fh)) catch @panic("");
+
+                return recv(client.reader, i32) catch @panic("");
+            }
+        }.f,
+
         .fsync = null,
         .setxattr = null,
         .getxattr = null,
@@ -595,10 +609,6 @@ pub fn run_server(enable_writing: bool) !void {
                 try send(writer, @bitCast(i32, @truncate(u32, std.os.linux.open(path.ptr(), std.os.O_RDWR | std.os.O_CREAT, mode))));
             },
 
-            .close => {
-                @panic("");
-            },
-
             .read => {
                 const fd = try recv(reader, i32);
                 const len = try recv(reader, u32);
@@ -715,6 +725,18 @@ pub fn run_server(enable_writing: bool) !void {
                 }
 
                 try send(writer, @bitCast(i32, @truncate(u32, std.os.linux.rmdir(path.ptr()))));
+            },
+
+            .close => {
+                const fd = try recv(reader, i32);
+
+                if (!valid_client_fd(fd)) {
+                    std.log.info("Server: write: fd misuse", .{});
+                    try send(writer, @as(i32, -std.os.EBADF));
+                    continue;
+                }
+
+                try send(writer, @bitCast(i32, @truncate(u32, std.os.linux.close(fd))));
             },
 
             // Anything else is illegal
