@@ -188,7 +188,6 @@ const Client = struct {
                     std.log.info("Client: going to read {d} bytes, out of {d} remaining", .{ result, end - foff });
 
                     if (result > 0) {
-                        //recvinto(client.reader, bytes[0..bytes_len]) catch @panic("");
                         recvinto(client.reader, (bytes + foff - @intCast(usize, foff_c))[0..@intCast(usize, result)]) catch @panic("");
                         foff += @intCast(usize, result);
                     } else if (result < 0) {
