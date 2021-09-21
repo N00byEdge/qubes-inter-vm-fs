@@ -29,7 +29,7 @@ fn do_fi(fi: ?*fuse.fuse_file_info) *FuseFileInfo {
 }
 
 fn to_fuse_stat(st: std.os.Stat) fuse.struct_stat {
-    var result: fuse.struct_stat = undefined;
+    var result = std.mem.zeroes(fuse.struct_stat);
     result.st_dev = 0;
     result.st_ino = 0;
     result.st_nlink = st.nlink;
