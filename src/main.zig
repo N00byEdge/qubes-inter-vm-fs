@@ -1,5 +1,8 @@
 const std = @import("std");
 
+const server = @import("server.zig");
+const comms = @import("comms.zig");
+
 const service_name = "n00byedge.qubes-inter-vm-fs";
 const config_dir_path = "/rw/config/inter-vm-fs/";
 
@@ -12,9 +15,6 @@ const fuse = @cImport({
 const fuse_ops = fuse.struct_fuse_operations;
 
 var client: Client = undefined;
-
-const off_t = fuse.off_t;
-const mode_t = fuse.mode_t;
 
 const FuseFileInfo = extern struct {
     flags: u32,
@@ -66,11 +66,11 @@ const Client = struct {
                 } else {
                     std.log.info("Client: stat '{s}'", .{path});
                 }
-                send(client.writer, Command.stat) catch @panic("");
-                sendpath(client.writer, path) catch @panic("");
-                const result = recv(client.reader, i32) catch @panic("");
+                comms.send(client.writer, comms.Command.stat) catch @panic("");
+                comms.sendpath(client.writer, path) catch @panic("");
+                const result = comms.recv(client.reader, i32) catch @panic("");
                 if (result == 0) {
-                    const st = recv(client.reader, std.os.Stat) catch @panic("");
+                    const st = comms.recv(client.reader, std.os.Stat) catch @panic("");
                     stbuf[0] = to_fuse_stat(st);
                 }
                 return result;
@@ -81,14 +81,14 @@ const Client = struct {
         .mknod = null,
 
         .mkdir = struct {
-            fn f(path: [*c]const u8, mode: mode_t) callconv(.C) c_int {
+            fn f(path: [*c]const u8, mode: fuse.mode_t) callconv(.C) c_int {
                 std.log.info("Client: mkdir '{s}'", .{path});
 
-                send(client.writer, Command.mkdir) catch @panic("");
-                sendpath(client.writer, path) catch @panic("");
-                send(client.writer, mode) catch @panic("");
+                comms.send(client.writer, comms.Command.mkdir) catch @panic("");
+                comms.sendpath(client.writer, path) catch @panic("");
+                comms.send(client.writer, @intCast(std.os.mode_t, mode)) catch @panic("");
 
-                return recv(client.reader, i32) catch @panic("");
+                return comms.recv(client.reader, i32) catch @panic("");
             }
         }.f,
 
@@ -99,10 +99,10 @@ const Client = struct {
                 if (!client.show_as_writeable)
                     return -std.os.EPERM;
 
-                send(client.writer, Command.unlink) catch @panic("");
-                sendpath(client.writer, path) catch @panic("");
+                comms.send(client.writer, comms.Command.unlink) catch @panic("");
+                comms.sendpath(client.writer, path) catch @panic("");
 
-                return recv(client.reader, i32) catch @panic("");
+                return comms.recv(client.reader, i32) catch @panic("");
             }
         }.f,
 
@@ -113,10 +113,10 @@ const Client = struct {
                 if (!client.show_as_writeable)
                     return -std.os.EPERM;
 
-                send(client.writer, Command.rmdir) catch @panic("");
-                sendpath(client.writer, path) catch @panic("");
+                comms.send(client.writer, comms.Command.rmdir) catch @panic("");
+                comms.sendpath(client.writer, path) catch @panic("");
 
-                return recv(client.reader, i32) catch @panic("");
+                return comms.recv(client.reader, i32) catch @panic("");
             }
         }.f,
 
@@ -127,11 +127,11 @@ const Client = struct {
                 _ = flags;
                 std.log.info("Client: rename '{s}' -> '{s}'", .{ p1, p2 });
 
-                send(client.writer, Command.rename) catch @panic("");
-                sendpath(client.writer, p1) catch @panic("");
-                sendpath(client.writer, p2) catch @panic("");
+                comms.send(client.writer, comms.Command.rename) catch @panic("");
+                comms.sendpath(client.writer, p1) catch @panic("");
+                comms.sendpath(client.writer, p2) catch @panic("");
 
-                return recv(client.reader, i32) catch @panic("");
+                return comms.recv(client.reader, i32) catch @panic("");
             }
         }.f,
 
@@ -146,11 +146,11 @@ const Client = struct {
                 if (!client.show_as_writeable)
                     return -std.os.EPERM;
 
-                send(client.writer, Command.truncate) catch @panic("");
-                send(client.writer, @intCast(i32, do_fi(fi).fh)) catch @panic("");
-                send(client.writer, new_size) catch @panic("");
+                comms.send(client.writer, comms.Command.truncate) catch @panic("");
+                comms.send(client.writer, @intCast(i32, do_fi(fi).fh)) catch @panic("");
+                comms.send(client.writer, new_size) catch @panic("");
 
-                return recv(client.reader, i32) catch @panic("");
+                return comms.recv(client.reader, i32) catch @panic("");
             }
         }.f,
 
@@ -158,10 +158,10 @@ const Client = struct {
             fn f(path: [*c]const u8, fi: ?*fuse.fuse_file_info) callconv(.C) c_int {
                 std.log.info("Client: open '{s}'", .{path});
 
-                send(client.writer, Command.open) catch @panic("");
-                sendpath(client.writer, path) catch @panic("");
+                comms.send(client.writer, comms.Command.open) catch @panic("");
+                comms.sendpath(client.writer, path) catch @panic("");
 
-                const result = recv(client.reader, i32) catch @panic("");
+                const result = comms.recv(client.reader, i32) catch @panic("");
                 std.log.info("Client: open returned {d}", .{result});
                 if (result > 0) {
                     do_fi(fi).fh = @intCast(u32, result);
@@ -172,24 +172,24 @@ const Client = struct {
         }.f,
 
         .read = struct {
-            fn f(path: [*c]const u8, bytes: [*c]u8, bytes_len: usize, foff_c: off_t, fi: ?*fuse.fuse_file_info) callconv(.C) c_int {
+            fn f(path: [*c]const u8, bytes: [*c]u8, bytes_len: usize, foff_c: fuse.off_t, fi: ?*fuse.fuse_file_info) callconv(.C) c_int {
                 std.log.info("Client: read '{s}' {d} {d}", .{ path, do_fi(fi).fh, bytes_len });
 
                 var foff = @intCast(usize, foff_c);
                 const end = bytes_len + foff;
 
                 while (foff < end) {
-                    send(client.writer, Command.read) catch @panic("");
-                    send(client.writer, @intCast(i32, do_fi(fi).fh)) catch @panic("");
-                    send(client.writer, @intCast(u32, end - foff)) catch @panic("");
-                    send(client.writer, foff) catch @panic("");
+                    comms.send(client.writer, comms.Command.read) catch @panic("");
+                    comms.send(client.writer, @intCast(i32, do_fi(fi).fh)) catch @panic("");
+                    comms.send(client.writer, @intCast(u32, end - foff)) catch @panic("");
+                    comms.send(client.writer, foff) catch @panic("");
 
-                    const result = recv(client.reader, i32) catch @panic("");
+                    const result = comms.recv(client.reader, i32) catch @panic("");
 
                     std.log.info("Client: going to read {d} bytes, out of {d} remaining", .{ result, end - foff });
 
                     if (result > 0) {
-                        recvinto(client.reader, (bytes + foff - @intCast(usize, foff_c))[0..@intCast(usize, result)]) catch @panic("");
+                        comms.recvinto(client.reader, (bytes + foff - @intCast(usize, foff_c))[0..@intCast(usize, result)]) catch @panic("");
                         foff += @intCast(usize, result);
                     } else if (result < 0) {
                         return result;
@@ -203,7 +203,7 @@ const Client = struct {
         }.f,
 
         .write = struct {
-            fn f(path: [*c]const u8, bytes: [*c]const u8, bytes_len_c: usize, foff_c: off_t, fi: ?*fuse.fuse_file_info) callconv(.C) c_int {
+            fn f(path: [*c]const u8, bytes: [*c]const u8, bytes_len_c: usize, foff_c: fuse.off_t, fi: ?*fuse.fuse_file_info) callconv(.C) c_int {
                 if (!client.show_as_writeable)
                     return -std.os.EPERM;
 
@@ -215,17 +215,17 @@ const Client = struct {
                 while (foff < end) {
                     var bytes_len = end - foff;
 
-                    if (bytes_len > max_write_bytes)
-                        bytes_len = max_write_bytes;
+                    if (bytes_len > comms.max_write_bytes)
+                        bytes_len = comms.max_write_bytes;
 
-                    send(client.writer, Command.write) catch @panic("");
-                    send(client.writer, @intCast(i32, do_fi(fi).fh)) catch @panic("");
-                    send(client.writer, @intCast(@TypeOf(max_write_bytes), bytes_len)) catch @panic("");
-                    send(client.writer, foff) catch @panic("");
+                    comms.send(client.writer, comms.Command.write) catch @panic("");
+                    comms.send(client.writer, @intCast(i32, do_fi(fi).fh)) catch @panic("");
+                    comms.send(client.writer, @intCast(@TypeOf(comms.max_write_bytes), bytes_len)) catch @panic("");
+                    comms.send(client.writer, foff) catch @panic("");
 
-                    sendfrom(client.writer, (bytes + foff - @intCast(usize, foff_c))[0..bytes_len]) catch @panic("");
+                    comms.sendfrom(client.writer, (bytes + foff - @intCast(usize, foff_c))[0..bytes_len]) catch @panic("");
 
-                    const result = recv(client.reader, i32) catch @panic("");
+                    const result = comms.recv(client.reader, i32) catch @panic("");
 
                     std.log.info("Client: write returned {d}", .{result});
 
@@ -269,10 +269,10 @@ const Client = struct {
                 if (!client.show_as_writeable)
                     return -std.os.EPERM;
 
-                send(client.writer, Command.close) catch @panic("");
-                send(client.writer, @intCast(i32, do_fi(fi).fh)) catch @panic("");
+                comms.send(client.writer, comms.Command.close) catch @panic("");
+                comms.send(client.writer, @intCast(i32, do_fi(fi).fh)) catch @panic("");
 
-                return recv(client.reader, i32) catch @panic("");
+                return comms.recv(client.reader, i32) catch @panic("");
             }
         }.f,
 
@@ -285,10 +285,10 @@ const Client = struct {
         .opendir = struct {
             fn f(path: [*c]const u8, fi: ?*fuse.fuse_file_info) callconv(.C) c_int {
                 std.log.info("Client: opendir '{s}'", .{path});
-                send(client.writer, Command.opendir) catch @panic("");
-                sendpath(client.writer, path) catch @panic("");
+                comms.send(client.writer, comms.Command.opendir) catch @panic("");
+                comms.sendpath(client.writer, path) catch @panic("");
 
-                const result = recv(client.reader, i32) catch @panic("");
+                const result = comms.recv(client.reader, i32) catch @panic("");
                 if (result > 0) {
                     do_fi(fi).fh = @intCast(u32, result);
                     return 0;
@@ -298,15 +298,15 @@ const Client = struct {
         }.f,
 
         .readdir = struct {
-            fn f(path: [*c]const u8, bytes: ?*c_void, fill: fuse.fuse_fill_dir_t, _: off_t, fi: ?*fuse.fuse_file_info, flags: fuse.fuse_readdir_flags) callconv(.C) c_int {
+            fn f(path: [*c]const u8, bytes: ?*c_void, fill: fuse.fuse_fill_dir_t, _: fuse.off_t, fi: ?*fuse.fuse_file_info, flags: fuse.fuse_readdir_flags) callconv(.C) c_int {
                 _ = flags;
                 std.log.info("Client: readdir '{s}' {d}", .{ path, do_fi(fi).fh });
-                send(client.writer, Command.readdir) catch @panic("");
-                send(client.writer, @intCast(i32, do_fi(fi).fh)) catch @panic("");
+                comms.send(client.writer, comms.Command.readdir) catch @panic("");
+                comms.send(client.writer, @intCast(i32, do_fi(fi).fh)) catch @panic("");
 
-                while (recv(client.reader, u8) catch @panic("") != 0) {
-                    const st = recv(client.reader, std.os.Stat) catch @panic("");
-                    const f_path = recvpath(client.reader) catch @panic("");
+                while (comms.recv(client.reader, u8) catch @panic("") != 0) {
+                    const st = comms.recv(client.reader, std.os.Stat) catch @panic("");
+                    const f_path = comms.recvpath(client.reader) catch @panic("");
 
                     const fuse_st = to_fuse_stat(st);
 
@@ -317,14 +317,14 @@ const Client = struct {
                         f_path.ptr(),
                         &fuse_st,
                         0,
-                        @intToEnum(fuse.fuse_fill_dir_flags, 0),
+                        std.mem.zeroes(fuse.fuse_fill_dir_flags),
                     ) != 0) {
                         std.log.info("Client: readdir: buffer full, not inserting last dent.", .{});
-                        send(client.writer, @as(u8, 0)) catch @panic("");
+                        comms.send(client.writer, @as(u8, 0)) catch @panic("");
                         break;
                     }
 
-                    send(client.writer, @as(u8, 1)) catch @panic("");
+                    comms.send(client.writer, @as(u8, 1)) catch @panic("");
                 }
 
                 return 0;
@@ -334,9 +334,9 @@ const Client = struct {
         .releasedir = struct {
             fn f(path: [*c]const u8, fi: ?*fuse.fuse_file_info) callconv(.C) c_int {
                 std.log.info("Client: releasedir {d} ('{s}')", .{ do_fi(fi).fh, path });
-                send(client.writer, Command.releasedir) catch @panic("");
-                send(client.writer, @intCast(u32, do_fi(fi).fh)) catch @panic("");
-                return recv(client.reader, i32) catch @panic("");
+                comms.send(client.writer, comms.Command.releasedir) catch @panic("");
+                comms.send(client.writer, @intCast(u32, do_fi(fi).fh)) catch @panic("");
+                return comms.recv(client.reader, i32) catch @panic("");
             }
         }.f,
 
@@ -372,22 +372,22 @@ const Client = struct {
         .access = struct {
             fn f(path: [*c]const u8, flags: c_int) callconv(.C) c_int {
                 std.log.info("Client: access 0x{X} '{s}'", .{ flags, path });
-                send(client.writer, Command.access) catch @panic("");
-                sendpath(client.writer, path) catch @panic("");
-                send(client.writer, flags) catch @panic("");
-                return recv(client.reader, i32) catch @panic("");
+                comms.send(client.writer, comms.Command.access) catch @panic("");
+                comms.sendpath(client.writer, path) catch @panic("");
+                comms.send(client.writer, flags) catch @panic("");
+                return comms.recv(client.reader, i32) catch @panic("");
             }
         }.f,
 
         .create = struct {
-            fn f(path: [*c]const u8, mode: mode_t, fi: ?*fuse.fuse_file_info) callconv(.C) c_int {
+            fn f(path: [*c]const u8, mode: fuse.mode_t, fi: ?*fuse.fuse_file_info) callconv(.C) c_int {
                 std.log.info("Client: create '{s}'", .{path});
 
-                send(client.writer, Command.create) catch @panic("");
-                sendpath(client.writer, path) catch @panic("");
-                send(client.writer, mode) catch @panic("");
+                comms.send(client.writer, comms.Command.create) catch @panic("");
+                comms.sendpath(client.writer, path) catch @panic("");
+                comms.send(client.writer, @intCast(std.os.mode_t, mode)) catch @panic("");
 
-                const result = recv(client.reader, i32) catch @panic("");
+                const result = comms.recv(client.reader, i32) catch @panic("");
                 std.log.info("Client: create returned {d}", .{result});
                 if (result > 0) {
                     do_fi(fi).fh = @intCast(u32, result);
@@ -410,370 +410,6 @@ const Client = struct {
         .lseek = null,
     },
 };
-
-const CommandIntType = u8;
-
-const Command = enum(CommandIntType) {
-    stat = 0,
-    opendir,
-    releasedir,
-    readdir,
-    access,
-    open,
-    close,
-    read,
-    write,
-    create,
-    unlink,
-    truncate,
-    mkdir,
-    rmdir,
-    rename,
-
-    _,
-};
-
-fn send(writer: std.fs.File.Writer, value: anytype) !void {
-    var offset: usize = 0;
-    const size = @sizeOf(@TypeOf(value));
-
-    while (offset < size) {
-        const val = @bitCast(i64, std.os.linux.write(writer.context.handle, @ptrCast([*]const u8, &value) + offset, size - offset));
-        if (val <= 0) {
-            std.log.err("Write fail on fd {d}: {d}", .{ writer.context.handle, -val });
-            return error.WriteFail;
-        }
-        offset += @intCast(usize, val);
-    }
-}
-
-fn sendfrom(writer: std.fs.File.Writer, buf: []const u8) !void {
-    var offset: usize = 0;
-    while (offset < buf.len) {
-        const val = @bitCast(i64, std.os.linux.write(writer.context.handle, buf.ptr + offset, buf.len - offset));
-        if (val <= 0) {
-            std.log.err("Write fail on fd {d}: {d}", .{ writer.context.handle, -val });
-            return error.WriteFail;
-        }
-        offset += @intCast(usize, val);
-    }
-}
-
-fn recv(reader: std.fs.File.Reader, comptime T: type) !T {
-    var value: T = undefined;
-
-    //TODO: Figure out why this doesn't work??
-    //try recvinto(reader, std.mem.toBytes(&value)[0..@sizeOf(T)]);
-
-    // We'll just use this for now...
-    var offset: usize = 0;
-    const size = @sizeOf(T);
-
-    while (offset < size) {
-        const val = @bitCast(i64, std.os.linux.read(reader.context.handle, @ptrCast([*]u8, &value) + offset, size - offset));
-        if (val <= 0) {
-            std.log.err("Read fail on fd {d}: {d}", .{ reader.context.handle, -val });
-            return error.ReadFail;
-        }
-        offset += @intCast(usize, val);
-    }
-
-    return value;
-}
-
-fn recvinto(reader: std.fs.File.Reader, buf: []u8) !void {
-    var offset: usize = 0;
-    while (offset < buf.len) {
-        const val = @bitCast(i64, std.os.linux.read(reader.context.handle, buf.ptr + offset, buf.len - offset));
-        if (val <= 0) {
-            std.log.err("Read fail on fd {d}: {d}", .{ reader.context.handle, -val });
-            return error.ReadFail;
-        }
-        offset += @intCast(usize, val);
-    }
-}
-
-const MAX_PATH_BYTES = std.fs.MAX_PATH_BYTES;
-
-const ReadPath = struct {
-    buffer: [MAX_PATH_BYTES]u8 = undefined,
-    len: usize = 0,
-
-    fn ptr(self: *const @This()) [*:0]const u8 {
-        return @ptrCast([*:0]const u8, &self.buffer[0]);
-    }
-
-    fn slice(self: *@This()) []u8 {
-        return self.buffer[0..self.len];
-    }
-};
-
-fn recvpath(reader: std.fs.File.Reader) callconv(.Inline) !ReadPath {
-    var result: ReadPath = .{};
-
-    result.len = try recv(reader, u16);
-    if (result.len > MAX_PATH_BYTES) {
-        return error.PathTooLong;
-    }
-
-    try recvinto(reader, result.slice());
-    return result;
-}
-
-fn sendpath(writer: std.fs.File.Writer, path: [*:0]const u8) !void {
-    const span = std.mem.span(path);
-
-    if (span.len > MAX_PATH_BYTES) {
-        return error.PathTooLong;
-    }
-
-    try send(writer, @intCast(u16, span.len));
-    try sendfrom(writer, span);
-}
-
-fn valid_client_fd(fd: i32) bool {
-    // 0, 1, 2 are standard
-    // 3 -> config dir
-    // 4 -> config file
-    return fd > 4;
-}
-
-const max_write_bytes: u16 = 1024 * 16;
-
-// stdin/stdout is already connected to the remote, nothing to do
-pub fn run_server(enable_writing: bool) !void {
-    const reader = std.io.getStdIn().reader();
-    const writer = std.io.getStdOut().writer();
-
-    try send(writer, @as(u8, @boolToInt(enable_writing)));
-
-    var data_buffer: [max_write_bytes]u8 = undefined;
-
-    while (true) {
-        switch (try recv(reader, Command)) {
-            .stat => {
-                const path = try recvpath(reader);
-                var stat_buf = std.mem.zeroes(std.os.Stat);
-                const result = @bitCast(i32, @truncate(u32, std.os.linux.stat(path.ptr(), &stat_buf)));
-                try send(writer, result);
-                if (result == 0)
-                    try send(writer, stat_buf);
-            },
-
-            .opendir => {
-                const path = try recvpath(reader);
-                const open_result = @bitCast(i32, @truncate(u32, std.os.linux.open(
-                    path.ptr(),
-                    std.os.O_RDONLY | std.os.O_CLOEXEC | std.os.O_DIRECTORY | std.os.O_NOCTTY | std.os.O_NONBLOCK,
-                    0,
-                )));
-                try send(writer, open_result);
-            },
-
-            .releasedir => {
-                const fd = try recv(reader, i32);
-                if (!valid_client_fd(fd)) {
-                    try send(writer, @as(i32, -std.os.EBADF));
-                } else {
-                    try send(writer, @bitCast(i32, @truncate(u32, std.os.linux.close(fd))));
-                }
-            },
-
-            .readdir => {
-                const read_fd = try recv(reader, i32);
-                if (!valid_client_fd(read_fd)) {
-                    try send(writer, @as(u8, 0));
-                } else {
-                    var dir_to_read = std.fs.Dir{ .fd = read_fd };
-                    var it = dir_to_read.iterate();
-                    while (true) {
-                        if (try it.next()) |dent| {
-                            // We got one!
-                            try send(writer, @as(u8, 1));
-
-                            // First send the stat
-                            var st = std.mem.zeroes(std.os.Stat);
-                            st.mode = @intCast(u32, @enumToInt(dent.kind)) << 12;
-                            try send(writer, st);
-
-                            // Now send the name
-                            try sendpath(writer, @ptrCast([*:0]const u8, dent.name.ptr));
-
-                            // Do you want another one?
-                            if (0 == try recv(reader, u8))
-                                break;
-                        } else {
-                            try send(writer, @as(u8, 0));
-                            break;
-                        }
-                    }
-                }
-            },
-
-            .access => {
-                const path = try recvpath(reader);
-                const flags = try recv(reader, u32);
-
-                if (flags & std.os.W_OK != 0 and !enable_writing) {
-                    try send(writer, @as(i32, -1));
-                } else {
-                    try send(writer, @bitCast(i32, @truncate(u32, std.os.linux.access(path.ptr(), flags))));
-                }
-            },
-
-            .open => {
-                const path = try recvpath(reader);
-                try send(writer, @bitCast(i32, @truncate(u32, std.os.linux.open(path.ptr(), if (enable_writing) std.os.O_RDWR else std.os.O_RDONLY, 0))));
-            },
-
-            .create => {
-                const path = try recvpath(reader);
-                const mode = @intCast(usize, try recv(reader, mode_t));
-
-                if (!enable_writing) {
-                    std.log.info("Server: create: writing with writing disabled!", .{});
-                    try send(writer, @as(i32, -std.os.EPERM));
-                    continue;
-                }
-
-                try send(writer, @bitCast(i32, @truncate(u32, std.os.linux.open(path.ptr(), std.os.O_RDWR | std.os.O_CREAT, mode))));
-            },
-
-            .read => {
-                const fd = try recv(reader, i32);
-                const len = try recv(reader, u32);
-                const foff = try recv(reader, off_t);
-
-                if (!valid_client_fd(fd)) {
-                    try send(writer, @as(i32, -std.os.EBADF));
-                    continue;
-                }
-
-                var buf = std.mem.span(&data_buffer);
-
-                if (buf.len > len)
-                    buf.len = len;
-
-                const result = @bitCast(i64, std.os.linux.pread(fd, buf.ptr, buf.len, foff));
-                try send(writer, @intCast(i32, result));
-                if (result > 0) {
-                    try sendfrom(writer, buf[0..@intCast(usize, result)]);
-                }
-            },
-
-            .write => {
-                const fd = try recv(reader, i32);
-                const len = try recv(reader, @TypeOf(max_write_bytes));
-                const foff = try recv(reader, off_t);
-
-                if (!valid_client_fd(fd)) {
-                    std.log.info("Server: write: fd misuse", .{});
-                    try send(writer, @as(i32, -std.os.EBADF));
-                    continue;
-                }
-
-                if (len > max_write_bytes) {
-                    @panic("Writing too many bytes!");
-                }
-
-                if (!enable_writing) {
-                    std.log.info("Server: write: writing with writing disabled!", .{});
-                    try send(writer, @as(i32, -std.os.EPERM));
-                    continue;
-                }
-
-                var buf = std.mem.span(&data_buffer)[0..len];
-                try recvinto(reader, buf);
-
-                try send(writer, @bitCast(i32, @truncate(u32, std.os.linux.pwrite(fd, buf.ptr, buf.len, foff))));
-            },
-
-            .unlink => {
-                const path = try recvpath(reader);
-
-                if (!enable_writing) {
-                    std.log.info("Server: unlink: writing with writing disabled!", .{});
-                    try send(writer, @as(i32, -std.os.EPERM));
-                    continue;
-                }
-
-                try send(writer, @bitCast(i32, @truncate(u32, std.os.linux.unlink(path.ptr()))));
-            },
-
-            .truncate => {
-                const fd = try recv(reader, i32);
-                const new_size = try recv(reader, c_long);
-
-                if (!valid_client_fd(fd)) {
-                    std.log.info("Server: write: fd misuse", .{});
-                    try send(writer, @as(i32, -std.os.EBADF));
-                    continue;
-                }
-
-                if (!enable_writing) {
-                    std.log.info("Server: truncate: writing with writing disabled!", .{});
-                    try send(writer, @as(i32, -std.os.EPERM));
-                    continue;
-                }
-
-                try send(writer, @bitCast(i32, @truncate(u32, std.os.linux.ftruncate(fd, new_size))));
-            },
-
-            .mkdir => {
-                const path = try recvpath(reader);
-                const mode = @intCast(u32, try recv(reader, mode_t));
-
-                if (!enable_writing) {
-                    std.log.info("Server: mkdir: writing with writing disabled!", .{});
-                    try send(writer, @as(i32, -std.os.EPERM));
-                    continue;
-                }
-
-                try send(writer, @bitCast(i32, @truncate(u32, std.os.linux.mkdir(path.ptr(), mode))));
-            },
-
-            .rename => {
-                const p1 = try recvpath(reader);
-                const p2 = try recvpath(reader);
-
-                if (!enable_writing) {
-                    std.log.info("Server: rename: writing with writing disabled!", .{});
-                    try send(writer, @as(i32, -std.os.EPERM));
-                    continue;
-                }
-
-                try send(writer, @bitCast(i32, @truncate(u32, std.os.linux.rename(p1.ptr(), p2.ptr()))));
-            },
-
-            .rmdir => {
-                const path = try recvpath(reader);
-
-                if (!enable_writing) {
-                    std.log.info("Server: unlink: writing with writing disabled!", .{});
-                    try send(writer, @as(i32, -std.os.EPERM));
-                    continue;
-                }
-
-                try send(writer, @bitCast(i32, @truncate(u32, std.os.linux.rmdir(path.ptr()))));
-            },
-
-            .close => {
-                const fd = try recv(reader, i32);
-
-                if (!valid_client_fd(fd)) {
-                    std.log.info("Server: write: fd misuse", .{});
-                    try send(writer, @as(i32, -std.os.EBADF));
-                    continue;
-                }
-
-                try send(writer, @bitCast(i32, @truncate(u32, std.os.linux.close(fd))));
-            },
-
-            // Anything else is illegal
-            _ => std.os.exit(1),
-        }
-    }
-}
 
 const fake_remote_connection = false;
 
@@ -924,7 +560,8 @@ pub fn main() !void {
                 }
             }
 
-            try run_server(enable_writing);
+            // stdin/stdout is already connected to the remote, nothing to do
+            try server.run(std.io.getStdIn().reader(), std.io.getStdOut().writer(), enable_writing);
         } else if (std.mem.eql(u8, arg, "create_share")) {
             //const share_name = arg_it.next();
             //const client = arg_it.next();
