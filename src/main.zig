@@ -124,6 +124,7 @@ const Client = struct {
 
         .rename = struct {
             fn f(p1: [*c]const u8, p2: [*c]const u8, flags: c_uint) callconv(.C) c_int {
+                _ = flags;
                 std.log.info("Client: rename '{s}' -> '{s}'", .{ p1, p2 });
 
                 send(client.writer, Command.rename) catch @panic("");
@@ -243,6 +244,7 @@ const Client = struct {
 
         .statfs = struct {
             fn f(path: [*c]const u8, stat_buf: [*c]fuse.struct_statvfs) callconv(.C) c_int {
+                _ = path;
                 stat_buf.*.f_bsize = 512;
                 stat_buf.*.f_frsize = 512;
 
